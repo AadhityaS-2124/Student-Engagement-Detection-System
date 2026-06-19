@@ -1,0 +1,7 @@
+data/raw/
+data/processed/
+*.mp4
+*.jpg
+*.h5
+*.pt
+__pycache__/

@@ -1,52 +1,59 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 from model import StudentEngagementCNN
 
-class SyntheticEngagementDataset(Dataset):
-    """
-    Generates realistic geometric feature matrices representing structural face metrics
-    (3 levels, 6 grid cells) to simulate live MediaPipe extractions for training.
-    """
-    def __init__(self, num_samples=1200):
-        self.features = torch.zeros(num_samples, 1, 4, 4)
-        self.labels = torch.randint(0, 3, (num_samples,))
-        
-        for i in range(num_samples):
-            label = self.labels[i].item()
-            
-            if label == 0:    # Disengaged: Simulate drooping features & erratic spatial head shifts
-                self.features[i, 0, 0:2, :] = torch.randn(2, 4) * 0.15 - 0.6  
-                self.features[i, 0, 2:4, :] = torch.randn(2, 4) * 0.20 + 0.7  
-            elif label == 1:  # Normally Engaged: Standard focal baseline distributions
-                self.features[i, 0, :, :] = torch.randn(4, 4) * 0.35
-            elif label == 2:  # Highly Engaged: Stable centered tracking, high focal eye opening 
-                self.features[i, 0, 0:2, :] = torch.randn(2, 4) * 0.10 + 0.8  
-                self.features[i, 0, 2:4, :] = torch.randn(2, 4) * 0.05 + 0.1  
-
-    def __len__(self):
-        return len(self.features)
-
-    def __getitem__(self, idx):
-        return self.features[idx], self.labels[idx]
-
 def run_training_pipeline():
-    print("Initializing Robust Training Pipeline with Behavioral Matrix Mapping...")
+    print("Initializing Weighted Production Training Pipeline...")
     
-    train_dataset = SyntheticEngagementDataset(num_samples=2000)
-    val_dataset = SyntheticEngagementDataset(num_samples=500)
+    X_path = "data/processed/kaggle_X.npy"
+    y_path = "data/processed/kaggle_y.npy"
     
+    if not (os.path.exists(X_path) and os.path.exists(y_path)):
+        print("[ERROR] Extracted Kaggle features missing. Please run extract_features.py first.")
+        return
+
+    print("🔥 Loading authentic behavioral dataset...")
+    X_data = torch.tensor(np.load(X_path), dtype=torch.float32)
+    y_data = torch.tensor(np.load(y_path), dtype=torch.long)
+    
+    # Calculate exact class distributions dynamically to solve imbalance
+    labels_np = y_data.numpy()
+    class_counts = np.bincount(labels_np, minlength=3)
+    print(f"Dataset Distribution -> Class 0 (Disengaged): {class_counts[0]} | Class 1: {class_counts[1]} | Class 2 (Engaged): {class_counts[2]}")
+    
+    # Compute inverse frequency weights: weight = total_samples / (num_classes * class_samples)
+    total_samples = len(labels_np)
+    weights = []
+    for count in class_counts:
+        if count > 0:
+            weights.append(total_samples / (3.0 * count))
+        else:
+            weights.append(1.0) # Avoid division by zero for unrepresented Class 1
+            
+    class_weights = torch.tensor(weights, dtype=torch.float32)
+    print(f"Calculated Penalization Weights: {class_weights.tolist()}")
+
+    # 80/20 train/validation split
+    dataset = TensorDataset(X_data, y_data)
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
     
     model = StudentEngagementCNN(num_classes=3)
-    criterion = nn.CrossEntropyLoss()
+    
+    # Inject penalization weights into the Cross Entropy loss engine
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
-    epochs = 10
-    print(f"Beginning optimization loops targeting over 93.5% validation accuracy...")
+    epochs = 15
+    print(f"Beginning adaptive optimization loops targeting over 93.5% validation accuracy...")
     
     for epoch in range(epochs):
         model.train()
@@ -70,12 +77,11 @@ def run_training_pipeline():
                 correct += (predicted == labels).sum().item()
                 
         epoch_loss = running_loss / len(train_loader.dataset)
-        val_acc = (correct / total) * 100
-        print(f"Epoch {epoch+1:02d}/{epochs} -> Loss: {epoch_loss:.4f} | Val Accuracy: {val_acc:.2f}%")
+        val_acc = (correct / total) * 100 if total > 0 else 0
+        print(f"Epoch {epoch+1:02d}/{epochs} -> Loss: {epoch_loss:.4f} | Dynamic Val Accuracy: {val_acc:.2f}%")
         
         if val_acc >= 93.5:
-            print(f"\n[SUCCESS] Target threshold reached at {val_acc:.2f}%! Saving production weights.")
-            import os
+            print(f"\n[SUCCESS] Target threshold reached at {val_acc:.2f}%! Saving real production weights.")
             os.makedirs("data/processed", exist_ok=True)
             torch.save(model.state_dict(), "data/processed/engagement_cnn_weights.pt")
             break
